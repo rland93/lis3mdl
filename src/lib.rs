@@ -6,20 +6,17 @@
 //! [`embedded-hal`]: https://docs.rs/embedded-hal/0.2\
 
 #![no_std]
-
-use core::mem;
-use embedded_hal as hal;
-use crate::hal::blocking::i2c::{Write, WriteRead};
+#![deny(unsafe_code)]
 
 use bitflags::bitflags;
 
 /// The full scale for measurement from 4 Gauss to 16 Gauss; Sensitivity of the sensor
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum FullScale {
     Fs4g,
     Fs8g,
     Fs12g,
-    Fs16g
+    Fs16g,
 }
 
 /// The mode to operate in, impacts noise, power consumption, and speed
@@ -28,7 +25,7 @@ pub enum OperatingMode {
     LowPower,
     MediumPerformance,
     HighPerformance,
-    UltraHighPerformance
+    UltraHighPerformance,
 }
 
 /// State of the LIS3MDL
@@ -36,7 +33,7 @@ pub enum OperatingMode {
 pub enum MeasurementMode {
     Idle,
     SingleMeasurement,
-    Continuous
+    Continuous,
 }
 
 /// Possible data rates at which the xyz data can be provided
@@ -52,7 +49,7 @@ pub enum DataRate {
     ODR_40Hz,
     ODR_80Hz,
     /// Fastest obtainable data rate for the given operating mode
-    ODR_Fast
+    ODR_Fast,
 }
 
 /// Driver Errors
@@ -102,7 +99,9 @@ pub struct Lis3mdl<I2C> {
     address: u8,
 }
 
-impl<I2C, E> Lis3mdl<I2C> where I2C: WriteRead<Error=E> + Write<Error=E>,
+impl<I2C> Lis3mdl<I2C>
+where
+    I2C: embedded_hal::i2c::I2c,
 {
     /// Create a new driver from an I<sup>2</sup>C peripheral and configures default settings:
     ///
@@ -116,14 +115,14 @@ impl<I2C, E> Lis3mdl<I2C> where I2C: WriteRead<Error=E> + Write<Error=E>,
     /// These defaults may be changed after initialization with `set_full_scale`,
     /// `set_measurement_mode`, `set_operating_mode` `set_temperature_sensor`,
     /// `set_data_rate`, and `set_block_data_update`, respectively.
-    pub fn new (i2c: I2C, addr: Address) -> Result<Self,Error> {
+    pub fn new(i2c: I2C, addr: Address) -> Result<Self, Error> {
         let mut lis3mdl = Lis3mdl {
             i2c,
             address: addr as u8,
         };
 
         if lis3mdl.who_am_i()? != LIS3MDL_DEVICE_ID {
-            return Err(Error::IncorrectDeviceIdFound)
+            return Err(Error::IncorrectDeviceIdFound);
         }
 
         lis3mdl.set_full_scale(FullScale::Fs12g)?;
@@ -157,21 +156,18 @@ impl<I2C, E> Lis3mdl<I2C> where I2C: WriteRead<Error=E> + Write<Error=E>,
     /// |        12      |           2281          |
     /// |        16      |           1711          |
     pub fn get_raw_mag_axes(&mut self) -> Result<I16xyz, Error> {
-
         let x = self.read_x_raw()?;
         let y = self.read_y_raw()?;
         let z = self.read_z_raw()?;
 
-        Ok(I16xyz {
-            x,
-            y,
-            z
-        })
+        Ok(I16xyz { x, y, z })
     }
 
     /// True if the XYZ data is available to be read
     pub fn xyz_data_available(&mut self) -> Result<bool, Error> {
-        Ok(self.read_device_status()?.contains(StatusRegisterBits::ZYXDA))
+        Ok(self
+            .read_device_status()?
+            .contains(StatusRegisterBits::ZYXDA))
     }
 
     /// Provide the magnetic field strength in each axis in milliGauss. Uses `get_raw_mag_axes` to
@@ -184,17 +180,17 @@ impl<I2C, E> Lis3mdl<I2C> where I2C: WriteRead<Error=E> + Write<Error=E>,
 
         // Gain values from Table 2 in AN4602 Rev 1
         let sensitivity: f64 = match fullscale {
-            FullScaleBits::FS4G => Ok(1000_f64/6842_f64),
-            FullScaleBits::FS8G => Ok(1000_f64/3421_f64),
-            FullScaleBits::FS12G => Ok(1000_f64/2281_f64),
-            FullScaleBits::FS16G => Ok(1000_f64/1711_f64),
-            _ => Err(Error::InvalidValue)
+            FullScaleBits::FS4G => Ok(1000_f64 / 6842_f64),
+            FullScaleBits::FS8G => Ok(1000_f64 / 3421_f64),
+            FullScaleBits::FS12G => Ok(1000_f64 / 2281_f64),
+            FullScaleBits::FS16G => Ok(1000_f64 / 1711_f64),
+            _ => Err(Error::InvalidValue),
         }?;
 
         Ok(I32xyz {
             x: (mag_data.x as f64 * sensitivity) as i32,
             y: (mag_data.y as f64 * sensitivity) as i32,
-            z: (mag_data.z as f64 * sensitivity) as i32
+            z: (mag_data.z as f64 * sensitivity) as i32,
         })
     }
 
@@ -202,7 +198,7 @@ impl<I2C, E> Lis3mdl<I2C> where I2C: WriteRead<Error=E> + Write<Error=E>,
     /// based on the magnetic field to be measured. This will affect the output of
     /// `get_raw_mag_axes` so use `get_mag_axes_mgauss` unless you intend to adjust the values
     /// yourself.
-    pub fn set_full_scale(&mut self, scale: FullScale) -> Result<(),Error> {
+    pub fn set_full_scale(&mut self, scale: FullScale) -> Result<(), Error> {
         // Mask for just the full scale bits.
         let fs_mask = !(ControlRegister2Bits::FS1 | ControlRegister2Bits::FS0);
 
@@ -233,13 +229,19 @@ impl<I2C, E> Lis3mdl<I2C> where I2C: WriteRead<Error=E> + Write<Error=E>,
         let reg4_mask = !(ControlRegister4Bits::OMZ1 | ControlRegister4Bits::OMZ0);
 
         let om = match mode {
-            OperatingMode::LowPower => (ControlRegister1Bits::empty(), ControlRegister4Bits::empty()),
-            OperatingMode::MediumPerformance => (ControlRegister1Bits::OM0, ControlRegister4Bits::OMZ0),
-            OperatingMode::HighPerformance => (ControlRegister1Bits::OM1, ControlRegister4Bits::OMZ1),
-            OperatingMode::UltraHighPerformance => (ControlRegister1Bits::OM1
-                                                        | ControlRegister1Bits::OM0,
-                                                    ControlRegister4Bits::OMZ1
-                                                        | ControlRegister4Bits::OMZ0),
+            OperatingMode::LowPower => {
+                (ControlRegister1Bits::empty(), ControlRegister4Bits::empty())
+            }
+            OperatingMode::MediumPerformance => {
+                (ControlRegister1Bits::OM0, ControlRegister4Bits::OMZ0)
+            }
+            OperatingMode::HighPerformance => {
+                (ControlRegister1Bits::OM1, ControlRegister4Bits::OMZ1)
+            }
+            OperatingMode::UltraHighPerformance => (
+                ControlRegister1Bits::OM1 | ControlRegister1Bits::OM0,
+                ControlRegister4Bits::OMZ1 | ControlRegister4Bits::OMZ0,
+            ),
         };
 
         // zero out the entries for OM1/OM0 and OMZ1/OMZ0
@@ -278,8 +280,10 @@ impl<I2C, E> Lis3mdl<I2C> where I2C: WriteRead<Error=E> + Write<Error=E>,
     /// for more details.
     pub fn set_data_rate(&mut self, rate: DataRate) -> Result<(), Error> {
         // Mask for the data rate setting
-        let odr_mask = !(ControlRegister1Bits::DO2 | ControlRegister1Bits::DO1
-            | ControlRegister1Bits::DO0 | ControlRegister1Bits::FAST_ODR);
+        let odr_mask = !(ControlRegister1Bits::DO2
+            | ControlRegister1Bits::DO1
+            | ControlRegister1Bits::DO0
+            | ControlRegister1Bits::FAST_ODR);
 
         let odr = match rate {
             DataRate::ODR_0_625Hz => ControlRegister1Bits::empty(),
@@ -289,8 +293,9 @@ impl<I2C, E> Lis3mdl<I2C> where I2C: WriteRead<Error=E> + Write<Error=E>,
             DataRate::ODR_10Hz => ControlRegister1Bits::DO2,
             DataRate::ODR_20Hz => ControlRegister1Bits::DO2 | ControlRegister1Bits::DO0,
             DataRate::ODR_40Hz => ControlRegister1Bits::DO2 | ControlRegister1Bits::DO1,
-            DataRate::ODR_80Hz => ControlRegister1Bits::DO2 | ControlRegister1Bits::DO1
-                                  | ControlRegister1Bits::DO0,
+            DataRate::ODR_80Hz => {
+                ControlRegister1Bits::DO2 | ControlRegister1Bits::DO1 | ControlRegister1Bits::DO0
+            }
             DataRate::ODR_Fast => ControlRegister1Bits::FAST_ODR,
         };
 
@@ -312,8 +317,7 @@ impl<I2C, E> Lis3mdl<I2C> where I2C: WriteRead<Error=E> + Write<Error=E>,
 
         if block {
             self.set_control_register_5(existing_reg_5_settings | ControlRegister5Bits::BDU)
-        }
-        else {
+        } else {
             self.set_control_register_5(existing_reg_5_settings)
         }
     }
@@ -326,66 +330,77 @@ impl<I2C, E> Lis3mdl<I2C> where I2C: WriteRead<Error=E> + Write<Error=E>,
 
         if enabled {
             self.set_control_register_1(existing_reg_1_settings | ControlRegister1Bits::TEMP_EN)
-        }
-        else {
+        } else {
             self.set_control_register_1(existing_reg_1_settings)
         }
     }
 
-    fn read_x_raw(&mut self) -> Result<i16,Error> {
-        self.read_register_i16(Register::OUT_X_H,Register::OUT_X_L)
+    fn read_x_raw(&mut self) -> Result<i16, Error> {
+        self.read_register_i16(Register::OUT_X_H, Register::OUT_X_L)
     }
 
-    fn read_y_raw(&mut self) -> Result<i16,Error> {
-        self.read_register_i16(Register::OUT_Y_H,Register::OUT_Y_L)
+    fn read_y_raw(&mut self) -> Result<i16, Error> {
+        self.read_register_i16(Register::OUT_Y_H, Register::OUT_Y_L)
     }
 
-    fn read_z_raw(&mut self) -> Result<i16,Error> {
-        self.read_register_i16(Register::OUT_Z_H,Register::OUT_Z_L)
+    fn read_z_raw(&mut self) -> Result<i16, Error> {
+        self.read_register_i16(Register::OUT_Z_H, Register::OUT_Z_L)
     }
 
     fn read_device_status(&mut self) -> Result<StatusRegisterBits, Error> {
-        Ok(StatusRegisterBits::from_bits_truncate(self.read_register(Register::STATUS_REG)?))
+        Ok(StatusRegisterBits::from_bits_truncate(
+            self.read_register(Register::STATUS_REG)?,
+        ))
     }
 
-    fn set_control_register_1(&mut self, bits: ControlRegister1Bits) -> Result<(),Error> {
+    fn set_control_register_1(&mut self, bits: ControlRegister1Bits) -> Result<(), Error> {
         Ok(self.write_register(Register::CTRL_REG1, bits.bits())?)
     }
 
-    fn set_control_register_2(&mut self, bits: ControlRegister2Bits) -> Result<(),Error> {
+    fn set_control_register_2(&mut self, bits: ControlRegister2Bits) -> Result<(), Error> {
         Ok(self.write_register(Register::CTRL_REG2, bits.bits())?)
     }
 
-    fn set_control_register_3(&mut self, bits: ControlRegister3Bits) -> Result<(),Error> {
+    fn set_control_register_3(&mut self, bits: ControlRegister3Bits) -> Result<(), Error> {
         Ok(self.write_register(Register::CTRL_REG3, bits.bits())?)
     }
 
-    fn set_control_register_4(&mut self, bits: ControlRegister4Bits) -> Result<(),Error> {
+    fn set_control_register_4(&mut self, bits: ControlRegister4Bits) -> Result<(), Error> {
         Ok(self.write_register(Register::CTRL_REG4, bits.bits())?)
     }
 
-    fn set_control_register_5(&mut self, bits: ControlRegister5Bits) -> Result<(),Error> {
+    fn set_control_register_5(&mut self, bits: ControlRegister5Bits) -> Result<(), Error> {
         Ok(self.write_register(Register::CTRL_REG5, bits.bits())?)
     }
 
     fn read_control_register_1(&mut self) -> Result<ControlRegister1Bits, Error> {
-        Ok(ControlRegister1Bits::from_bits_truncate(self.read_register(Register::CTRL_REG1)?))
+        Ok(ControlRegister1Bits::from_bits_truncate(
+            self.read_register(Register::CTRL_REG1)?,
+        ))
     }
 
     fn read_control_register_2(&mut self) -> Result<ControlRegister2Bits, Error> {
-        Ok(ControlRegister2Bits::from_bits_truncate(self.read_register(Register::CTRL_REG2)?))
+        Ok(ControlRegister2Bits::from_bits_truncate(
+            self.read_register(Register::CTRL_REG2)?,
+        ))
     }
 
     fn read_control_register_3(&mut self) -> Result<ControlRegister3Bits, Error> {
-        Ok(ControlRegister3Bits::from_bits_truncate(self.read_register(Register::CTRL_REG3)?))
+        Ok(ControlRegister3Bits::from_bits_truncate(
+            self.read_register(Register::CTRL_REG3)?,
+        ))
     }
 
     fn read_control_register_4(&mut self) -> Result<ControlRegister4Bits, Error> {
-        Ok(ControlRegister4Bits::from_bits_truncate(self.read_register(Register::CTRL_REG4)?))
+        Ok(ControlRegister4Bits::from_bits_truncate(
+            self.read_register(Register::CTRL_REG4)?,
+        ))
     }
 
     fn read_control_register_5(&mut self) -> Result<ControlRegister5Bits, Error> {
-        Ok(ControlRegister5Bits::from_bits_truncate(self.read_register(Register::CTRL_REG5)?))
+        Ok(ControlRegister5Bits::from_bits_truncate(
+            self.read_register(Register::CTRL_REG5)?,
+        ))
     }
 
     fn read_register_i16(&mut self, reg_low: Register, reg_high: Register) -> Result<i16, Error> {
@@ -398,13 +413,17 @@ impl<I2C, E> Lis3mdl<I2C> where I2C: WriteRead<Error=E> + Write<Error=E>,
     }
 
     fn read_register(&mut self, reg: Register) -> Result<u8, Error> {
-        let mut buffer: [u8; 1] = unsafe { mem::uninitialized() };
-        self.i2c.write_read(self.address, &[reg.addr()], &mut buffer).map_err(i2c_error)?;
+        let mut buffer: [u8; 1] = [0; 1];
+        self.i2c
+            .write_read(self.address, &[reg.addr()], &mut buffer)
+            .map_err(i2c_error)?;
         Ok(buffer[0])
     }
 
     fn write_register(&mut self, reg: Register, byte: u8) -> Result<(), Error> {
-        self.i2c.write(self.address, &[reg.addr(), byte]).map_err(i2c_error)
+        self.i2c
+            .write(self.address, &[reg.addr(), byte])
+            .map_err(i2c_error)
     }
 }
 
@@ -438,7 +457,7 @@ enum Register {
     INT_CFG = 0x30,
     INT_SRC = 0x31,
     INT_THS_L = 0x32,
-    INT_THS_H = 0x33
+    INT_THS_H = 0x33,
 }
 
 impl Register {
@@ -512,6 +531,7 @@ struct StatusRegisterBits: u8 {
 
 bitflags! {
 #[allow(non_camel_case_types, dead_code)]
+#[derive(PartialEq)]
 struct FullScaleBits: u8 {
     const FS4G = 0b0000_0000;
     const FS8G = 0b0010_0000;
